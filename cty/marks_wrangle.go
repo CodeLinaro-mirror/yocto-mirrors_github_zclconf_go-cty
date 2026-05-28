@@ -9,19 +9,14 @@ import (
 	"github.com/zclconf/go-cty/cty/ctymarks"
 )
 
-// WrangleMarksDeep is a specialized variant of [Transform] that is focused
-// on interrogating and modifying any marks present throughout a data structure,
-// without modifying anything else about the value.
+// WrangleMarksDeepWithTracker is like [Value.WrangleMarksDeep] but accepts
+// a [WalkTracker] that callers can use to track or control entry and exit
+// into nested containers.
 //
-// Refer to the [WrangleFunc] documentation for more information. Each of
-// the provided functions is called in turn for each mark at each distinct path,
-// and the first function that returns a non-nil [ctymarks.WrangleAction] "wins"
-// and prevents any later ones from running for a particular mark/path pair.
-//
-// The implementation makes a best effort to avoid constructing new values
-// unless marks have actually changed, to keep this operation relatively cheap
-// in the presumed-common case where no marks are present at all.
-func (v Value) WrangleMarksDeep(wranglers ...WrangleFunc) (Value, error) {
+// For example, this could be used to skip visiting marks under values of
+// particular types, or values that are already marked in some way that
+// indicates that nested marks don't need to be visited at all.
+func (v Value) WrangleMarksDeepWithTracker(tracker WalkTracker[Value], wranglers ...WrangleFunc) (Value, error) {
 	// This function is implemented in this package, rather than in the
 	// separate "ctymarks", so that it can intrude into the unexported
 	// internal details of [Value] to minimize overhead when no marks
@@ -37,7 +32,7 @@ func (v Value) WrangleMarksDeep(wranglers ...WrangleFunc) (Value, error) {
 	}
 	topMarks := make(ValueMarks)
 	var errs []error
-	new := wrangleMarksDeep(v, wranglers, path, topMarks, &errs)
+	new := wrangleMarksDeep(v, tracker, wranglers, path, topMarks, &errs)
 	if new == NilVal {
 		new = v // completely unchanged
 	}
@@ -53,6 +48,22 @@ func (v Value) WrangleMarksDeep(wranglers ...WrangleFunc) (Value, error) {
 	return new.WithMarks(topMarks), err
 }
 
+// WrangleMarksDeep is a specialized variant of [Transform] that is focused
+// on interrogating and modifying any marks present throughout a data structure,
+// without modifying anything else about the value.
+//
+// Refer to the [WrangleFunc] documentation for more information. Each of
+// the provided functions is called in turn for each mark at each distinct path,
+// and the first function that returns a non-nil [ctymarks.WrangleAction] "wins"
+// and prevents any later ones from running for a particular mark/path pair.
+//
+// The implementation makes a best effort to avoid constructing new values
+// unless marks have actually changed, to keep this operation relatively cheap
+// in the presumed-common case where no marks are present at all.
+func (v Value) WrangleMarksDeep(wranglers ...WrangleFunc) (Value, error) {
+	return v.WrangleMarksDeepWithTracker(defaultValueWalkTracker, wranglers...)
+}
+
 // wrangleMarksDeep is the main implementation of [WrangleMarksDeep], which
 // calls itself recursively to handle nested data structures.
 //
@@ -63,12 +74,13 @@ func (v Value) WrangleMarksDeep(wranglers ...WrangleFunc) (Value, error) {
 // Modifies topMarks and errs during traversal to collect (respectively) any
 // marks that caused [ctymarks.WrangleExpand] and and errors returned by
 // wrangle functions.
-func wrangleMarksDeep(v Value, wranglers []WrangleFunc, path Path, topMarks ValueMarks, errs *[]error) Value {
+func wrangleMarksDeep(v Value, tracker WalkTracker[Value], wranglers []WrangleFunc, path Path, topMarks ValueMarks, errs *[]error) Value {
 	var givenMarks, newMarks ValueMarks
 	makeNewValue := false
 	// The following is the same idea as [Value.Unmark], but implemented inline
 	// here so that we can skip copying any existing ValueMarks that might
 	// already be present, since we know we're not going to try to mutate it.
+	origV := v
 	if marked, ok := v.v.(marker); ok {
 		v = Value{
 			ty: v.ty,
@@ -155,12 +167,20 @@ func wrangleMarksDeep(v Value, wranglers []WrangleFunc, path Path, topMarks Valu
 			break // nothing to do for an empty container
 		}
 
+		enter, err := tracker.EnterContainer(origV, path)
+		if err != nil {
+			*errs = append(*errs, err)
+		}
+		if !enter {
+			break
+		}
+
 		// We'll avoid allocating a new slice until we know we're going
 		// to make a change.
 		var newElems []any // as would appear in Value.v for all three of these types
 		for i, innerV := range replaceKWithIdx(v.Elements()) {
 			path := append(path, IndexStep{Key: NumberIntVal(int64(i))})
-			newInnerV := wrangleMarksDeep(innerV, wranglers, path, topMarks, errs)
+			newInnerV := wrangleMarksDeep(innerV, tracker, wranglers, path, topMarks, errs)
 			if newInnerV != NilVal {
 				needNewValue()
 				if newElems == nil {
@@ -184,6 +204,11 @@ func wrangleMarksDeep(v Value, wranglers []WrangleFunc, path Path, topMarks Valu
 			v.v = newElems
 		}
 
+		err = tracker.ExitContainer(origV, v.WithMarks(newMarks), path)
+		if err != nil {
+			*errs = append(*errs, err)
+		}
+
 	case ty.IsMapType() || ty.IsObjectType():
 		// These types both have the same internal representation, and we
 		// know we're not going to change anything about the type, so we
@@ -191,6 +216,14 @@ func wrangleMarksDeep(v Value, wranglers []WrangleFunc, path Path, topMarks Valu
 		l := v.LengthInt()
 		if l == 0 {
 			break // nothing to do for an empty container
+		}
+
+		enter, err := tracker.EnterContainer(origV, path)
+		if err != nil {
+			*errs = append(*errs, err)
+		}
+		if !enter {
+			break
 		}
 
 		// We'll avoid allocating a new map until we know we're going to
@@ -204,7 +237,7 @@ func wrangleMarksDeep(v Value, wranglers []WrangleFunc, path Path, topMarks Valu
 				pathStep = IndexStep{Key: keyV}
 			}
 			path := append(path, pathStep)
-			newInnerV := wrangleMarksDeep(innerV, wranglers, path, topMarks, errs)
+			newInnerV := wrangleMarksDeep(innerV, tracker, wranglers, path, topMarks, errs)
 			if newInnerV != NilVal {
 				needNewValue()
 				if newElems == nil {
@@ -222,6 +255,11 @@ func wrangleMarksDeep(v Value, wranglers []WrangleFunc, path Path, topMarks Valu
 			// if we built a new map of elements then it should replace
 			// the one from our input value.
 			v.v = newElems
+		}
+
+		err = tracker.ExitContainer(origV, v.WithMarks(newMarks), path)
+		if err != nil {
+			*errs = append(*errs, err)
 		}
 	}
 

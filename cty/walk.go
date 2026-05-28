@@ -24,7 +24,12 @@ import (
 // returns, since its backing array is re-used for other calls.
 func Walk(val Value, cb func(Path, Value) (bool, error)) error {
 	var path Path
-	return walk(path, val, cb)
+	return walk(path, val, defaultValueWalkTracker, cb)
+}
+
+func WalkWithTracker(val Value, tracker WalkTracker[Value], cb func(Path, Value) (bool, error)) error {
+	var path Path
+	return walk(path, val, tracker, cb)
 }
 
 // DeepValues returns an iterable sequence containing at least the given
@@ -47,7 +52,7 @@ func DeepValues(val Value) iter.Seq2[Path, Value] {
 	}
 }
 
-func walk(path Path, val Value, cb func(Path, Value) (bool, error)) error {
+func walk(path Path, val Value, tracker WalkTracker[Value], cb func(Path, Value) (bool, error)) error {
 	deeper, err := cb(path, val)
 	if err != nil {
 		return err
@@ -69,23 +74,46 @@ func walk(path Path, val Value, cb func(Path, Value) (bool, error)) error {
 	ty := val.Type()
 	switch {
 	case ty.IsObjectType():
+		enter, err := tracker.EnterContainer(val, path)
+		if err != nil {
+			return err
+		}
+		if !enter {
+			break
+		}
 		for it := rawVal.ElementIterator(); it.Next(); {
 			nameVal, av := it.Element()
 			path := append(path, GetAttrStep{
 				Name: nameVal.AsString(),
 			})
-			err := walk(path, av, cb)
+			err := walk(path, av, tracker, cb)
 			if err != nil {
 				return err
 			}
 		}
+		err = tracker.ExitContainer(val, val, path)
+		if err != nil {
+			return err
+		}
 	case rawVal.CanIterateElements():
+		enter, err := tracker.EnterContainer(val, path)
+		if err != nil {
+			return err
+		}
+		if !enter {
+			break
+		}
+
 		for it := rawVal.ElementIterator(); it.Next(); {
 			kv, ev := it.Element()
 			path := append(path, IndexStep{
 				Key: kv,
 			})
-			err := walk(path, ev, cb)
+			err := walk(path, ev, tracker, cb)
+			if err != nil {
+				return err
+			}
+			err = tracker.ExitContainer(val, val, path)
 			if err != nil {
 				return err
 			}
@@ -263,4 +291,58 @@ func transform(path Path, val Value, t Transformer) (Value, error) {
 		return DynamicVal, err
 	}
 	return newVal, err
+}
+
+// WalkTracker is a callback interface used to let a caller of a function
+// that deeply walks nested types or values keep track of the transitions
+// into and out of containers and to optionally skip parts of the walk.
+type WalkTracker[I TypeOrValue] interface {
+	// EnterContainer is called just before the walk begins visiting paths
+	// nested beneath the given item at the given path.
+	//
+	// This is only guaranteed to be called if there's at least one nested
+	// path to visit under the given path, because some walkers skip empty
+	// containers completely.
+	//
+	// Implementers should return true if they wish to be given an opportunity
+	// to visit items at paths beneath this container, or false if they wish
+	// to skip them. If skipping, the walk completely skips anything under
+	// this path prefix and does not call ExitContainer for the given path.
+	EnterContainer(item I, path Path) (bool, error)
+
+	// ExitContainer is called just after visiting all of the paths nested
+	// beneath the item at the given path.
+	//
+	// oldItem and path match an earlier call to EnterContainer. newItem
+	// is what oldItem was transformed into after any nested transformations,
+	// although exactly what that means depends on the type of walk this
+	// interface is being used with. For deep operations that don't do any
+	// transformations, oldItem and newItem are equal.
+	//
+	// Note that ExitContainer is only called for items that have other items
+	// nested inside them, and not for leaf primitive-typed or capsule-typed
+	// items. It is also skipped if the corresponding EnterContainer call
+	// returned false, indicating that the caller did not want to visit any
+	// nested paths beneath the prefix at all.
+	ExitContainer(oldItem, newItem I, path Path) error
+}
+
+type defaultValueWalkTrackerType struct{}
+
+// EnterContainer implements [WalkTracker].
+func (d defaultValueWalkTrackerType) EnterContainer(item Value, path Path) (bool, error) {
+	return true, nil
+}
+
+// ExitContainer implements [WalkTracker].
+func (d defaultValueWalkTrackerType) ExitContainer(oldItem Value, newItem Value, path Path) error {
+	return nil
+}
+
+var defaultValueWalkTracker = defaultValueWalkTrackerType{}
+
+// TypeOrValue is used as the constraint for type parameters on functions and
+// types that can be used with either types or values.
+type TypeOrValue interface {
+	Type | Value
 }
