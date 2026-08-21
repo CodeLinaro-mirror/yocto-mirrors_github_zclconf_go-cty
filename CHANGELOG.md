@@ -1,5 +1,6 @@
 # 1.19.1 (Unreleased)
 
+- stdlib: `SignumFunc` now works with any number cty can represent, whereas before it was unnecessarily limited only to numbers that could be converted to Go's `int` type.
 
 # 1.19.0 (July 6, 2026)
 

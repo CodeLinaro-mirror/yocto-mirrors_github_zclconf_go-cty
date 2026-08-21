@@ -1065,6 +1065,41 @@ func TestSignum(t *testing.T) {
 			cty.NumberFloatVal(-1),
 			false,
 		},
+		{
+			cty.NumberFloatVal(-9.2),
+			cty.NumberFloatVal(-1),
+			false,
+		},
+		{
+			cty.NumberFloatVal(3.14),
+			cty.NumberFloatVal(1),
+			false,
+		},
+		{
+			cty.NumberFloatVal(0.25),
+			cty.NumberFloatVal(1),
+			false,
+		},
+		{
+			cty.NumberFloatVal(math.Inf(1)),
+			cty.NumberFloatVal(1),
+			false,
+		},
+		{
+			cty.NumberFloatVal(math.Inf(-1)),
+			cty.NumberFloatVal(-1),
+			false,
+		},
+		{
+			cty.MustParseNumberVal("2e+500"),
+			cty.NumberFloatVal(1),
+			false,
+		},
+		{
+			cty.MustParseNumberVal("-2e+500"),
+			cty.NumberFloatVal(-1),
+			false,
+		},
 	}
 
 	for _, test := range tests {
