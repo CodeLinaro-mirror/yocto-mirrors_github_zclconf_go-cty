@@ -7,6 +7,17 @@ type unknownType struct {
 	// additional constraints we know about the range of real values this
 	// unknown value could be a placeholder for.
 	refinement unknownValRefinement
+
+	// nestedMarks describes any nested marks we know about even though the
+	// value itself is unknown.
+	//
+	// For example, this can occur when calling [Value.Index] on a known
+	// collection but using an unknown key. In that case the index operation
+	// doesn't know which collection element to return and so returns an
+	// unknown value, but we still preserve all of the marks from the elements
+	// of that collection so we can describe them when a caller asks about
+	// deep marks underneath the unknown value.
+	nestedMarks []nestedItemMarks
 }
 
 // totallyUnknown is the representation a a value we know nothing about at
