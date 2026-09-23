@@ -240,8 +240,11 @@ func TestPathApply(t *testing.T) {
 				if gotErr == nil {
 					t.Fatalf("succeeded, but want error\nwant error: %s", test.WantErr)
 				}
-
-				if gotErrStr := gotErr.Error(); gotErrStr != test.WantErr {
+				gotErrStr := gotErr.Error()
+				if err, ok := gotErr.(cty.PathError); ok {
+					gotErrStr = fmt.Sprintf("at step %d: %s", len(err.Path)-1, gotErrStr)
+				}
+				if gotErrStr != test.WantErr {
 					t.Fatalf("wrong error\ngot error:  %s\nwant error: %s", gotErrStr, test.WantErr)
 				}
 				return

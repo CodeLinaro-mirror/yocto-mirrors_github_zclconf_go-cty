@@ -146,7 +146,10 @@ func (p Path) Apply(val Value) (Value, error) {
 	for i, step := range p {
 		val, err = step.Apply(val)
 		if err != nil {
-			return NilVal, fmt.Errorf("at step %d: %s", i, err)
+			return NilVal, PathError{
+				error: err,
+				Path:  p[:i+1],
+			}
 		}
 	}
 	return val, nil
