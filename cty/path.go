@@ -91,7 +91,20 @@ func (p Path) GetAttr(name string) Path {
 	return ret
 }
 
-// Equals compares 2 Paths for exact equality.
+// UnknownDescendent returns a new Path that is the reciever with
+// [UnknownDescendentStep] appended to the end.
+//
+// This is provided as a convenient way to construct paths, but each call
+// will create garbage so it should not be used where memory pressure is a
+// concern.
+func (p Path) UnknownDescendent() Path {
+	ret := make(Path, len(p)+1)
+	copy(ret, p)
+	ret[len(p)] = UnknownDescendentStep{}
+	return ret
+}
+
+// Equals compares two [Path] values for exact equality.
 func (p Path) Equals(other Path) bool {
 	if len(p) != len(other) {
 		return false
@@ -112,6 +125,11 @@ func (p Path) Equals(other Path) bool {
 			}
 
 			if !pv.Key.RawEquals(ov.Key) {
+				return false
+			}
+		case UnknownDescendentStep:
+			_, ok := other[i].(UnknownDescendentStep)
+			if !ok {
 				return false
 			}
 		default:
@@ -302,4 +320,54 @@ func (s GetAttrStep) Apply(val Value) (Value, error) {
 
 func (s GetAttrStep) GoString() string {
 	return fmt.Sprintf("cty.GetAttrStep{Name:%q}", s.Name)
+}
+
+// UnknownDescendentStep is a special [PathStep] type which can be reported
+// downstream of an unknown value when describing characteristics that are
+// assumed to apply to some or all of the as-yet-unknown values nested beneath
+// that unknown value, as opposed to characteristics that are known to apply
+// to only specific paths beneath the unknown values.
+//
+// Conceptually this [PathStep] represents the idea of lookup up an unknown
+// index in a collection or an unknown attribute in an object, although its
+// primary purpose is for use in the results of functions that perform recursive
+// walks of arbitrary values and want to report different information at each
+// path, in situations where it's not yet known exactly which sub-path certain
+// information applies to.
+//
+// In particular this can happen when recursively searching for marks in a
+// data structure that contains unknown values: for any unknown values that are
+// placeholders for collection-typed or structural-typed values, the result
+// may report that arbitrary descendents of that unknown value could have a
+// certain mark without being able to commit to a specific nested path that
+// mark would appear at.
+//
+// Unlike other [PathStep] types, this one can be a placeholder for one or more
+// other path steps, potentially describing both the direct children and the
+// indirect descendents of the value all at once.
+type UnknownDescendentStep struct {
+	pathStepImpl
+}
+
+// Apply always returns [cty.DynamicVal], but that value may potentially be
+// marked to approximate what would happen if looking up an unknown index or
+// attribute in the given value.
+//
+// It's only valid to call this this with values of types that can have
+// descendents. For example, passing a primitive-typed value will return an
+// error because values of those types never have descendents.
+func (s UnknownDescendentStep) Apply(val Value) (Value, error) {
+	if !typeCanHaveNestedMarks(val.Type()) {
+		return NilVal, errors.New("value does not have any elements or attributes")
+	}
+	if val.IsNull() {
+		return NilVal, errors.New("cannot access elements or attributes on a null value")
+	}
+
+	_, marks := val.UnmarkDeep()
+	return DynamicVal.WithMarks(marks), nil
+}
+
+func (s UnknownDescendentStep) GoString() string {
+	return "cty.UnknownDescendentStep{}"
 }
