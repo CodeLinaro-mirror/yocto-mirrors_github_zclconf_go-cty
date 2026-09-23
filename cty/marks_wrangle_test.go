@@ -369,6 +369,31 @@ found mark "bad" at path cty.Path{cty.IndexStep{Key:cty.NumberIntVal(2)}}`,
 				"unmarked 2": cty.StringVal("unmarked"),
 			}),
 		},
+
+		"unknown map with a nested mark, preserved": {
+			input: cty.UnknownValWithNestedMarks(cty.Map(cty.String), cty.NewValueMarks("a")),
+			funcs: []cty.WrangleFunc{
+				func(mark any, path cty.Path) (ctymarks.WrangleAction, error) {
+					if len(path) == 0 {
+						return nil, fmt.Errorf("this error should not be observed")
+					}
+					return ctymarks.WrangleKeep, nil
+				},
+			},
+			want: cty.UnknownValWithNestedMarks(cty.Map(cty.String), cty.NewValueMarks("a")),
+		},
+		"unknown map with a nested mark, dropped": {
+			input: cty.UnknownValWithNestedMarks(cty.Map(cty.String), cty.NewValueMarks("a")),
+			funcs: []cty.WrangleFunc{
+				func(mark any, path cty.Path) (ctymarks.WrangleAction, error) {
+					if len(path) == 0 {
+						return nil, fmt.Errorf("this error should not be observed")
+					}
+					return ctymarks.WrangleDrop, nil
+				},
+			},
+			want: cty.UnknownVal(cty.Map(cty.String)),
+		},
 	}
 
 	for name, test := range tests {
