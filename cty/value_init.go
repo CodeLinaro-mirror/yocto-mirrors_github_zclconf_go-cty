@@ -2,6 +2,7 @@ package cty
 
 import (
 	"fmt"
+	"iter"
 	"math/big"
 	"reflect"
 
@@ -363,4 +364,108 @@ func CapsuleVal(ty Type, wrapVal any) Value {
 		ty: ty,
 		v:  wrapVal,
 	}
+}
+
+// UnknownChoice takes a sequence of values and returns a single value that
+// somehow represents an as-yet-undecided choice of any one of them.
+//
+// If the given sequence has length zero then the result is cty.NilVal.
+// If the sequence has length one then the result is that one value.
+// For two or more values that are not equal the result is a value that has
+// at least some aspects unknown, but is a best effort to represent what
+// all of the values have in common. The precision of the result might improve
+// in future versions such that some inputs produce a result with fewer unknown
+// values than before.
+//
+// The intended use of this function is for cty-based languages that want to
+// implement some sort of conditional choice between values where the selection
+// may itself be based on an unknown value, and therefore the result of that
+// conditional choice must include unknowns itself.
+//
+// This function does not impose restrictions on the types of the given values,
+// but if the values are of different types then the result is likely to be
+// an unknown value of an unknown type. Callers may therefore wish to attempt
+// to unify the types using functions in the "convert" package before passing
+// the converted values to this function, in which case the result is far more
+// likely to have a wholly-known type.
+func UnknownChoice(vals iter.Seq[Value]) Value {
+	var ret Value
+	for val := range vals {
+		if ret == NilVal {
+			ret = val
+			continue
+		}
+		eq := val.Equals(ret)
+		if eq, _ := eq.Unmark(); eq.True() {
+			_, pathMarks := ret.UnmarkDeepWithPaths()
+			ret = ret.MarkWithPaths(pathMarks)
+			continue
+		}
+		// If we get here then our result is going to be at least partially
+		// unknown, but we'll try to make it at least partially known if
+		// the values all have something in common.
+		a, aMarks := val.Unmark()
+		b, bMarks := ret.Unmark()
+		aTy, bTy := a.Type(), b.Type()
+		aRng, bRng := a.Range(), b.Range()
+		var retTy Type
+		if aTy.Equals(bTy) {
+			retTy = bTy
+		} else if aTy.IsListType() && bTy.IsListType() {
+			retTy = List(DynamicPseudoType)
+		} else if aTy.IsSetType() && bTy.IsSetType() {
+			retTy = Set(DynamicPseudoType)
+		} else if aTy.IsMapType() && bTy.IsMapType() {
+			retTy = Map(DynamicPseudoType)
+		} else {
+			retTy = DynamicPseudoType
+		}
+		if a.IsNull() && b.IsNull() {
+			ret = NullVal(retTy).WithMarks(aMarks, bMarks)
+			continue
+		}
+		// After this point this iteration's result is definitely going to be
+		// an unknown value of retTy, but we might modify this further if
+		// we find additional commonalities below.
+		ret = UnknownVal(retTy).WithMarks(aMarks, bMarks)
+		if aRng.CouldBeNull() || bRng.CouldBeNull() {
+			// If either value could be null then the value in adding other
+			// refinements is reduced because other operations that benefit
+			// from refined values often apply only for known-not-null values.
+			continue
+		}
+		// After this point we can assume that this iteration's result is
+		// definitely not null. We may be able to add other refinements too.
+		if a.IsKnown() && b.IsKnown() {
+			if retTy.IsCollectionType() && a.IsKnown() && b.IsKnown() {
+				// Due to the logic above, retTy can only be a collection type
+				// if both aTy and bTy are of the _same_ collection type.
+				minLen := min(a.LengthInt(), b.LengthInt())
+				maxLen := max(a.LengthInt(), b.LengthInt())
+				// The following might automatically upgrade an unknown list into
+				// a known list whose elements are unknown if both lists were
+				// the same length.
+				ret = ret.Refine().
+					NotNull().
+					CollectionLengthLowerBound(minLen).
+					CollectionLengthUpperBound(maxLen).
+					NewValue()
+				continue
+			}
+			if retTy == Number {
+				var minVal, maxVal Value
+				if a.LessThan(b).True() {
+					minVal, maxVal = a, b
+				} else {
+					minVal, maxVal = b, a
+				}
+				ret = ret.Refine().
+					NotNull().
+					NumberRangeInclusive(minVal, maxVal).
+					NewValue()
+				continue
+			}
+		}
+	}
+	return ret
 }

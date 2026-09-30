@@ -786,3 +786,23 @@ type tristateBool rune
 const tristateTrue tristateBool = 'T'
 const tristateFalse tristateBool = 'F'
 const tristateUnknown tristateBool = 0
+
+func (tb tristateBool) And(other tristateBool) tristateBool {
+	if tb == tristateFalse || other == tristateFalse {
+		return tristateFalse
+	}
+	if tb == tristateUnknown || other == tristateUnknown {
+		return tristateUnknown
+	}
+	return tristateTrue
+}
+
+func (tb tristateBool) Or(other tristateBool) tristateBool {
+	if tb == tristateTrue || other == tristateTrue {
+		return tristateTrue
+	}
+	if tb == tristateUnknown || other == tristateUnknown {
+		return tristateUnknown
+	}
+	return tristateFalse
+}

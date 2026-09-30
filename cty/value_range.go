@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/zclconf/go-cty/cty/ctystrings"
 )
 
 // Range returns an object that offers partial information about the range
@@ -103,6 +105,11 @@ type ValueRange struct {
 // precisely as possible with the available information.
 func (r ValueRange) TypeConstraint() Type {
 	return r.ty
+}
+
+// UnknownVal returns an unknown value whose range matches the receiver.
+func (r ValueRange) UnknownVal() Value {
+	// TODO
 }
 
 // CouldBeNull returns true unless the value being described is definitely
@@ -409,4 +416,87 @@ func definitelyNotNull(v Value) bool {
 		return !v.IsNull()
 	}
 	return v.Range().DefinitelyNotNull()
+}
+
+// commonRange returns a [ValueRange] that contains everything that is included
+// in the two other given value ranges, while attempting to return the tightest
+// possible range.
+func commonRange(a, b ValueRange) ValueRange {
+	if !a.ty.Equals(b.ty) || a.raw == nil || b.raw == nil {
+		return ValueRange{
+			ty:  DynamicPseudoType,
+			raw: nil, // no refinements at all, because only known-typed values can have refinements
+		}
+	}
+
+	var rfn unknownValRefinement
+	nullable := refinementNullable{
+		isNull: a.raw.null().And(b.raw.null()),
+	}
+	switch aRfn := a.raw.(type) {
+	case *refinementString:
+		bRfn, ok := b.raw.(*refinementString)
+		if !ok {
+			break
+		}
+		if aRfn.prefix == bRfn.prefix {
+			rfn = &refinementString{
+				prefix:             aRfn.prefix,
+				refinementNullable: nullable,
+			}
+			break
+		}
+		if commonLen := min(len(aRfn.prefix), len(bRfn.prefix)); commonLen != 0 {
+			commonPrefix := aRfn.prefix[:commonLen]
+			for i := range commonLen {
+				if bRfn.prefix[i] != commonPrefix[i] {
+					commonPrefix = aRfn.prefix[:i]
+					break
+				}
+			}
+			commonPrefix = ctystrings.SafeKnownPrefix(commonPrefix)
+			if len(commonPrefix) != 0 {
+				rfn = &refinementString{
+					prefix:             commonPrefix,
+					refinementNullable: nullable,
+				}
+				break
+			}
+		}
+	case *refinementCollection:
+		bRfn, ok := b.raw.(*refinementCollection)
+		if !ok {
+			break
+		}
+		rfn = &refinementCollection{
+			minLen:             min(aRfn.minLen, bRfn.minLen),
+			maxLen:             max(aRfn.maxLen, bRfn.maxLen),
+			refinementNullable: nullable,
+		}
+	case *refinementNumber:
+		bRfn, ok := b.raw.(*refinementNumber)
+		if !ok {
+			break
+		}
+		newMin := mostNumberValue(Value.LessThan, aRfn.min, bRfn.min)
+		newMax := mostNumberValue(Value.GreaterThan, aRfn.max, bRfn.max)
+		// For simplicity we currently always return inclusive bounds here,
+		// which means our result is potentially slightly looser than it
+		// could've been but we're still definitely returning something that
+		// subsumes both ranges.
+		rfn = &refinementNumber{
+			min: newMin, minInc: true,
+			max: newMax, maxInc: true,
+			refinementNullable: nullable,
+		}
+	}
+	if rfn == nil && nullable.isNull != tristateUnknown {
+		rfn = &refinementNullable{
+			isNull: nullable.isNull,
+		}
+	}
+	return ValueRange{
+		ty:  a.ty,
+		raw: rfn,
+	}
 }
